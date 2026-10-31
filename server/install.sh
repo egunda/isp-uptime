@@ -92,12 +92,11 @@ configure_apache() {
         $SUDO a2enmod rewrite >/dev/null 2>&1 || true
     fi
 
-    TARGET_LINK="/var/www/html/isp-monitor"
+    TARGET_LINK="/var/www/html/isp-uptime"
     if [ -d "/var/www/html" ]; then
-        if [ ! -e "${TARGET_LINK}" ]; then
-            echo "Creating symlink from ${WEB_DIR} to ${TARGET_LINK}..."
-            $SUDO ln -s "${WEB_DIR}" "${TARGET_LINK}" 2>/dev/null || true
-        fi
+        echo "Creating/updating symlink at ${TARGET_LINK} to ${WEB_DIR}..."
+        $SUDO rm -f "${TARGET_LINK}" 2>/dev/null || true
+        $SUDO ln -s "${WEB_DIR}" "${TARGET_LINK}" 2>/dev/null || true
     fi
 }
 
@@ -157,7 +156,7 @@ echo "To start the monitoring server:"
 echo "   cd ${SCRIPT_DIR} && ./start.sh"
 echo ""
 echo "Web Interface will be accessible at:"
-echo "   http://<YOUR_SERVER_IP>/isp-monitor/   (or via custom VirtualHost)"
+echo "   http://<YOUR_SERVER_IP>/isp-uptime/   (or via custom VirtualHost)"
 echo "WebSocket Daemon port:"
 echo "   ws://<YOUR_SERVER_IP>:8080"
 echo "==========================================================="

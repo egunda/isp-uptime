@@ -81,7 +81,7 @@ echo "==========================================================="
 echo "WebSocket Daemon: ws://0.0.0.0:8080"
 echo "Log File:        ${LOG_FILE}"
 if [ "$APACHE_STARTED" -eq 1 ]; then
-    echo "Web Dashboard:   http://localhost/isp-monitor/"
+    echo "Web Dashboard:   http://localhost/isp-uptime/"
 else
     echo "Web Dashboard:   http://localhost:8000/"
 fi

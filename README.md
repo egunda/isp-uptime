@@ -39,6 +39,9 @@ Designed specifically for tracking frequent ISP disconnections, calculating math
 ```
 isp/
 ├── README.md                      # Documentation & Architecture Guide
+├── index.php                      # Root web entry point (delegates to server/web/)
+├── api.php                        # Root REST API forwarder
+├── .htaccess                      # Access protection & URL rewrite rules
 ├── install.sh                     # Master interactive installer
 ├── start.sh                       # Master starter script
 ├── stop.sh                        # Master stopper script
@@ -90,7 +93,7 @@ isp/
    This starts the Apache web server and launches the PHP WebSocket server in the background on port `8080`.
 
 3. Access the Web Dashboard:
-   - If using Apache: `http://YOUR_SERVER_IP/isp-monitor/`
+   - If using Apache: `http://YOUR_SERVER_IP/isp-uptime/`
    - If using the standalone fallback: `http://YOUR_SERVER_IP:8000/`
 
 ---
