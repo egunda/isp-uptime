@@ -1,0 +1,54 @@
+# Runtime data & plain text logs (Keep directory structure but ignore data files)
+server/data/*.csv
+server/data/*.json
+!server/data/.gitkeep
+
+# Process ID files
+*.pid
+server/*.pid
+client/*.pid
+
+# Log files
+*.log
+server/*.log
+client/*.log
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Editor and OS temporary files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.directory
+
+# Environment / Secret tokens
+.env
+.env.*
+*.secret
