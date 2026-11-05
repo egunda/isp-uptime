@@ -230,6 +230,63 @@ body {
     background: var(--border-color);
 }
 
+.btn-clean {
+    background: rgba(168, 85, 247, 0.15);
+    border: 1px solid rgba(168, 85, 247, 0.4);
+    color: #c084fc;
+}
+
+.btn-clean:hover {
+    background: #9333ea;
+    color: white;
+}
+
+.btn-danger {
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    color: #f87171;
+}
+
+.btn-danger:hover {
+    background: #ef4444;
+    color: white;
+}
+
+.btn-delete-row {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    border-radius: var(--radius-sm);
+    padding: 3px 6px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.2s;
+}
+
+.btn-delete-row:hover {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: #ef4444;
+    color: #f87171;
+}
+
+.clean-option-box {
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 14px 16px;
+}
+
+.clean-option-box.danger-box {
+    border-color: rgba(239, 68, 68, 0.35);
+    background: rgba(239, 68, 68, 0.05);
+}
+
+.clean-option-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
 .custom-date-box {
     display: none;
     align-items: center;

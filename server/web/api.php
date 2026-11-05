@@ -111,8 +111,18 @@ switch ($action) {
 
         $windowSeconds = max(1, $to - $from);
         $outages = [];
-        $totalDowntimeSec = 0;
         $longestOutageSec = 0;
+        $ispIntervals = [];
+
+        // Load current live state to identify truly active / down ISPs vs abandoned ones
+        $currentState = [];
+        if (file_exists(STATE_FILE)) {
+            $rawState = @file_get_contents(STATE_FILE);
+            $decodedState = json_decode($rawState, true);
+            if (is_array($decodedState)) {
+                $currentState = $decodedState;
+            }
+        }
 
         if (file_exists(OUTAGES_FILE)) {
             if (($fp = fopen(OUTAGES_FILE, 'r')) !== false) {
@@ -125,10 +135,28 @@ switch ($action) {
                     $ispName = $row[2] ?? $ispId;
                     $downTime = intval($row[3]);
                     $downDatetime = $row[4];
-                    $upTime = !empty($row[5]) ? intval($row[5]) : $now;
-                    $upDatetime = !empty($row[6]) ? $row[6] : 'Currently Down';
-                    $status = $row[8] ?? ($upTime === $now ? 'ONGOING' : 'RESOLVED');
-                    $reason = $row[9] ?? 'Connection lost';
+
+                    // Check status & whether outage is genuinely ongoing
+                    if (empty($row[5]) || ($row[8] ?? '') === 'ONGOING') {
+                        $isActuallyDown = isset($currentState[$ispId]) && (($currentState[$ispId]['status'] ?? '') === 'DOWN');
+                        if ($isActuallyDown) {
+                            $upTime = $now;
+                            $upDatetime = 'Currently Down';
+                            $status = 'ONGOING';
+                            $reason = $row[9] ?? 'Connection lost';
+                        } else {
+                            // Abandoned test ISP or stale outage that never received an UP event
+                            $upTime = max($downTime + 1, min($now, $downTime + 60));
+                            $upDatetime = date('Y-m-d H:i:s', $upTime);
+                            $status = 'RESOLVED';
+                            $reason = ($row[9] ?? 'Connection lost') . ' (Stale/Transient)';
+                        }
+                    } else {
+                        $upTime = intval($row[5]);
+                        $upDatetime = $row[6] ?? date('Y-m-d H:i:s', $upTime);
+                        $status = $row[8] ?? 'RESOLVED';
+                        $reason = $row[9] ?? 'Connection lost';
+                    }
 
                     // Apply ISP filter
                     if ($filterIsp !== 'all' && $filterIsp !== '' && $ispId !== $filterIsp) {
@@ -141,7 +169,7 @@ switch ($action) {
 
                     if ($overlapEnd > $overlapStart) {
                         $overlapDuration = $overlapEnd - $overlapStart;
-                        $totalDowntimeSec += $overlapDuration;
+                        $ispIntervals[$ispId][] = [$overlapStart, $overlapEnd];
                         $fullDuration = max(0, $upTime - $downTime);
 
                         if ($fullDuration > $longestOutageSec) {
@@ -166,6 +194,28 @@ switch ($action) {
                     }
                 }
                 fclose($fp);
+            }
+        }
+
+        // Mathematically merge overlapping outage intervals to prevent double-counting
+        $totalDowntimeSec = 0;
+        foreach ($ispIntervals as $id => $intervals) {
+            usort($intervals, function($a, $b) { return $a[0] - $b[0]; });
+            $merged = [];
+            foreach ($intervals as $iv) {
+                if (empty($merged)) {
+                    $merged[] = $iv;
+                    continue;
+                }
+                $last = &$merged[count($merged) - 1];
+                if ($iv[0] <= $last[1]) {
+                    $last[1] = max($last[1], $iv[1]);
+                } else {
+                    $merged[] = $iv;
+                }
+            }
+            foreach ($merged as $iv) {
+                $totalDowntimeSec += ($iv[1] - $iv[0]);
             }
         }
 
@@ -293,6 +343,290 @@ switch ($action) {
         }
         fclose($output);
         exit;
+
+    case 'delete_outage':
+        $id = trim($_REQUEST['id'] ?? '');
+        if (empty($id)) {
+            echo json_encode(['status' => 'error', 'message' => 'Missing outage id']);
+            break;
+        }
+
+        $deleted = false;
+        if (file_exists(OUTAGES_FILE)) {
+            $fp = fopen(OUTAGES_FILE, 'r+');
+            if ($fp && flock($fp, LOCK_EX)) {
+                $header = fgetcsv($fp);
+                $rows = [];
+                while (($row = fgetcsv($fp)) !== false) {
+                    if (count($row) >= 1 && $row[0] === $id) {
+                        $deleted = true;
+                        continue;
+                    }
+                    $rows[] = $row;
+                }
+                ftruncate($fp, 0);
+                rewind($fp);
+                fputcsv($fp, $header);
+                foreach ($rows as $r) {
+                    fputcsv($fp, $r);
+                }
+                flock($fp, LOCK_UN);
+                fclose($fp);
+            }
+        }
+
+        echo json_encode([
+            'status' => $deleted ? 'success' : 'error',
+            'message' => $deleted ? "Outage {$id} successfully deleted." : "Outage {$id} not found."
+        ]);
+        break;
+
+    case 'purge_isp':
+        $ispId = trim($_REQUEST['isp_id'] ?? '');
+        if (empty($ispId)) {
+            echo json_encode(['status' => 'error', 'message' => 'Missing isp_id']);
+            break;
+        }
+
+        $outagesRemoved = 0;
+        if (file_exists(OUTAGES_FILE)) {
+            $fp = fopen(OUTAGES_FILE, 'r+');
+            if ($fp && flock($fp, LOCK_EX)) {
+                $header = fgetcsv($fp);
+                $rows = [];
+                while (($row = fgetcsv($fp)) !== false) {
+                    if (isset($row[1]) && $row[1] === $ispId) {
+                        $outagesRemoved++;
+                        continue;
+                    }
+                    $rows[] = $row;
+                }
+                ftruncate($fp, 0);
+                rewind($fp);
+                fputcsv($fp, $header);
+                foreach ($rows as $r) {
+                    fputcsv($fp, $r);
+                }
+                flock($fp, LOCK_UN);
+                fclose($fp);
+            }
+        }
+
+        // Clean events.csv
+        $eventsRemoved = 0;
+        if (file_exists(EVENTS_FILE)) {
+            $efp = fopen(EVENTS_FILE, 'r+');
+            if ($efp && flock($efp, LOCK_EX)) {
+                $eHeader = fgetcsv($efp);
+                $eRows = [];
+                while (($row = fgetcsv($efp)) !== false) {
+                    if (isset($row[2]) && $row[2] === $ispId) {
+                        $eventsRemoved++;
+                        continue;
+                    }
+                    $eRows[] = $row;
+                }
+                ftruncate($efp, 0);
+                rewind($efp);
+                fputcsv($efp, $eHeader);
+                foreach ($eRows as $r) {
+                    fputcsv($efp, $r);
+                }
+                flock($efp, LOCK_UN);
+                fclose($efp);
+            }
+        }
+
+        // Clean state.json
+        if (file_exists(STATE_FILE)) {
+            $raw = @file_get_contents(STATE_FILE);
+            $st = json_decode($raw, true);
+            if (is_array($st) && isset($st[$ispId])) {
+                unset($st[$ispId]);
+                file_put_contents(STATE_FILE, json_encode($st, JSON_PRETTY_PRINT), LOCK_EX);
+            }
+        }
+
+        echo json_encode([
+            'status' => 'success',
+            'message' => "Purged ISP '{$ispId}' ({$outagesRemoved} outage records and {$eventsRemoved} event logs removed)."
+        ]);
+        break;
+
+    case 'clean_garbage':
+        $minDuration = isset($_REQUEST['min_duration']) ? intval($_REQUEST['min_duration']) : 3;
+        $stateIsps = [];
+        $activeIsps = [];
+        if (file_exists(STATE_FILE)) {
+            $rawState = @file_get_contents(STATE_FILE);
+            $decodedState = json_decode($rawState, true);
+            if (is_array($decodedState)) {
+                $stateIsps = $decodedState;
+                foreach ($stateIsps as $id => $info) {
+                    if (($info['status'] ?? '') === 'UP') {
+                        $activeIsps[$id] = true;
+                    }
+                }
+            }
+        }
+
+        $now = time();
+        $removedCount = 0;
+        $fixedCount = 0;
+        $dedupCount = 0;
+
+        if (file_exists(OUTAGES_FILE)) {
+            $fp = fopen(OUTAGES_FILE, 'r+');
+            if ($fp && flock($fp, LOCK_EX)) {
+                $header = fgetcsv($fp);
+                $rows = [];
+                while (($row = fgetcsv($fp)) !== false) {
+                    if (count($row) >= 5) $rows[] = $row;
+                }
+
+                $kept = [];
+                foreach ($rows as $r) {
+                    $id = $r[0];
+                    $ispId = $r[1];
+                    $downTime = intval($r[3]);
+                    $upTime = !empty($r[5]) ? intval($r[5]) : null;
+                    $dur = intval($r[7] ?? 0);
+                    $status = $r[8] ?? ($upTime ? 'RESOLVED' : 'ONGOING');
+
+                    // 1. Remove obsolete test ISP 'isp_1' or completely untracked ISPs
+                    if ($ispId === 'isp_1' || (!isset($stateIsps[$ispId]) && empty($activeIsps[$ispId]))) {
+                        $removedCount++;
+                        continue;
+                    }
+
+                    // 2. Fix stuck ongoing outages for ISPs that are actually UP
+                    if ($status === 'ONGOING' || empty($upTime)) {
+                        $isDown = isset($stateIsps[$ispId]) && ($stateIsps[$ispId]['status'] ?? '') === 'DOWN';
+                        if (!$isDown) {
+                            $resolvedUp = max($downTime + 1, min($now, $downTime + 60));
+                            $r[5] = $resolvedUp;
+                            $r[6] = date('Y-m-d H:i:s', $resolvedUp);
+                            $r[7] = $resolvedUp - $downTime;
+                            $r[8] = 'RESOLVED';
+                            $r[9] = ($r[9] ?? '') . ' (Auto-closed stale outage)';
+                            $dur = $r[7];
+                            $upTime = $resolvedUp;
+                            $fixedCount++;
+                        }
+                    }
+
+                    // 3. Remove short noise glitch outages (< minDuration)
+                    if ($minDuration > 0 && $dur > 0 && $dur < $minDuration && $status === 'RESOLVED') {
+                        $removedCount++;
+                        continue;
+                    }
+
+                    $kept[] = $r;
+                }
+
+                // 4. Merge overlapping/duplicate records for the same ISP
+                $byIsp = [];
+                foreach ($kept as $r) {
+                    $byIsp[$r[1]][] = $r;
+                }
+
+                $finalRows = [];
+                foreach ($byIsp as $ispId => $ispOutages) {
+                    usort($ispOutages, function($a, $b) { return intval($a[3]) - intval($b[3]); });
+                    $merged = [];
+                    foreach ($ispOutages as $curr) {
+                        if (empty($merged)) {
+                            $merged[] = $curr;
+                            continue;
+                        }
+                        $prev = &$merged[count($merged) - 1];
+                        $prevUp = !empty($prev[5]) ? intval($prev[5]) : $now;
+                        $currDown = intval($curr[3]);
+                        $currUp = !empty($curr[5]) ? intval($curr[5]) : $now;
+
+                        // If current overlaps or is within 5 seconds of previous
+                        if ($currDown <= ($prevUp + 5)) {
+                            $newDown = min(intval($prev[3]), $currDown);
+                            $newUp = max($prevUp, $currUp);
+                            $prev[3] = $newDown;
+                            $prev[4] = date('Y-m-d H:i:s', $newDown);
+                            $prev[5] = $newUp;
+                            $prev[6] = date('Y-m-d H:i:s', $newUp);
+                            $prev[7] = max(0, $newUp - $newDown);
+                            $prev[8] = ($prev[8] === 'ONGOING' || $curr[8] === 'ONGOING') ? 'ONGOING' : 'RESOLVED';
+                            $dedupCount++;
+                        } else {
+                            $merged[] = $curr;
+                        }
+                    }
+                    foreach ($merged as $m) $finalRows[] = $m;
+                }
+
+                ftruncate($fp, 0);
+                rewind($fp);
+                fputcsv($fp, $header);
+                foreach ($finalRows as $r) fputcsv($fp, $r);
+                flock($fp, LOCK_UN);
+                fclose($fp);
+            }
+        }
+
+        // Clean obsolete isp_1 from events
+        if (file_exists(EVENTS_FILE)) {
+            $efp = fopen(EVENTS_FILE, 'r+');
+            if ($efp && flock($efp, LOCK_EX)) {
+                $eHeader = fgetcsv($efp);
+                $eRows = [];
+                while (($row = fgetcsv($efp)) !== false) {
+                    if (isset($row[2]) && ($row[2] === 'isp_1' || (!isset($stateIsps[$row[2]]) && empty($activeIsps[$row[2]])))) {
+                        continue;
+                    }
+                    $eRows[] = $row;
+                }
+                ftruncate($efp, 0);
+                rewind($efp);
+                fputcsv($efp, $eHeader);
+                foreach ($eRows as $r) fputcsv($efp, $r);
+                flock($efp, LOCK_UN);
+                fclose($efp);
+            }
+        }
+
+        // Clean obsolete isp_1 from state
+        if (file_exists(STATE_FILE)) {
+            $raw = @file_get_contents(STATE_FILE);
+            $st = json_decode($raw, true);
+            if (is_array($st) && isset($st['isp_1'])) {
+                unset($st['isp_1']);
+                file_put_contents(STATE_FILE, json_encode($st, JSON_PRETTY_PRINT), LOCK_EX);
+            }
+        }
+
+        echo json_encode([
+            'status' => 'success',
+            'message' => 'Cleaned garbage records successfully.',
+            'stats' => [
+                'records_removed' => $removedCount,
+                'stuck_outages_closed' => $fixedCount,
+                'duplicates_merged' => $dedupCount
+            ]
+        ]);
+        break;
+
+    case 'reset_all':
+        $outageHeader = "id,isp_id,isp_name,down_timestamp,down_datetime,up_timestamp,up_datetime,duration_seconds,status,reason\n";
+        file_put_contents(OUTAGES_FILE, $outageHeader, LOCK_EX);
+
+        $eventHeader = "timestamp,datetime,isp_id,isp_name,event_type,duration_seconds,details\n";
+        file_put_contents(EVENTS_FILE, $eventHeader, LOCK_EX);
+
+        file_put_contents(STATE_FILE, json_encode(new stdClass(), JSON_PRETTY_PRINT), LOCK_EX);
+
+        echo json_encode([
+            'status' => 'success',
+            'message' => 'All outage and event data has been reset to factory state.'
+        ]);
+        break;
 
     default:
         echo json_encode(['status' => 'error', 'message' => "Unknown action '{$action}'"]);

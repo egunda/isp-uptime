@@ -62,6 +62,9 @@ init_data_storage();
                 <a href="#" class="btn-action btn-secondary" id="btn-export-csv" download title="Download CSV report">
                     📥 Export CSV
                 </a>
+                <button type="button" class="btn-action btn-clean" id="btn-open-clean-modal" title="Manage & Clean Garbage Downtimes">
+                    🧹 Clean Data
+                </button>
             </div>
         </section>
 
@@ -167,10 +170,11 @@ init_data_storage();
                         <th>Total Outage Duration</th>
                         <th>Period Downtime</th>
                         <th>Cause / Reason</th>
+                        <th style="width: 50px; text-align: center;">Action</th>
                     </tr>
                 </thead>
                 <tbody id="outages-tbody">
-                    <tr><td colspan="7" class="empty-state">Loading historical records...</td></tr>
+                    <tr><td colspan="8" class="empty-state">Loading historical records...</td></tr>
                 </tbody>
             </table>
         </section>
@@ -218,6 +222,73 @@ init_data_storage();
             <p style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">
                 The client will maintain a persistent WebSocket connection to the server. If the ISP connection drops, the server immediately marks it DOWN and calculates downtime down to the exact second when it reconnects.
             </p>
+        </div>
+    </div>
+
+    <!-- Clean Data / Maintenance Modal -->
+    <div class="modal-overlay" id="clean-modal">
+        <div class="modal-content" style="max-width: 580px;">
+            <div class="modal-header">
+                <h3>🧹 Clean Garbage Downtimes & Maintenance</h3>
+                <button class="modal-close" id="btn-close-clean-modal">&times;</button>
+            </div>
+            <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">
+                Clean up test records, restart spikes, and stale unclosed outages from plain-text CSV files.
+            </p>
+
+            <div class="clean-option-box">
+                <div class="clean-option-header">
+                    <strong>⚡ Recommended Auto-Clean</strong>
+                    <span class="tag-status resolved">Safe</span>
+                </div>
+                <p style="font-size: 12px; color: var(--text-muted); margin: 6px 0 10px 0;">
+                    Purges obsolete test ISP (<code>isp_1</code>), auto-closes stuck ongoing outages, deduplicates overlapping records, and trims glitches &lt; 3s.
+                </p>
+                <button type="button" class="btn-action" id="btn-run-auto-clean">Run Auto Cleanup</button>
+            </div>
+
+            <div class="clean-option-box" style="margin-top: 14px;">
+                <div class="clean-option-header">
+                    <strong>⏱️ Prune Short Noise Outages</strong>
+                </div>
+                <p style="font-size: 12px; color: var(--text-muted); margin: 6px 0 10px 0;">
+                    Remove quick restart glitches or network blips shorter than:
+                </p>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <select class="form-select" id="clean-noise-duration" style="width: 130px;">
+                        <option value="3">Under 3s</option>
+                        <option value="5" selected>Under 5s</option>
+                        <option value="10">Under 10s</option>
+                        <option value="30">Under 30s</option>
+                    </select>
+                    <button type="button" class="btn-action btn-secondary" id="btn-run-prune-noise">Prune Noise</button>
+                </div>
+            </div>
+
+            <div class="clean-option-box" style="margin-top: 14px;">
+                <div class="clean-option-header">
+                    <strong>🗑️ Purge Specific ISP History</strong>
+                </div>
+                <p style="font-size: 12px; color: var(--text-muted); margin: 6px 0 10px 0;">
+                    Completely remove all outage records and events for an old/inactive ISP ID:
+                </p>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <select class="form-select" id="clean-purge-isp-select" style="flex: 1;">
+                        <option value="">Select ISP to purge...</option>
+                    </select>
+                    <button type="button" class="btn-action btn-danger" id="btn-run-purge-isp">Purge ISP</button>
+                </div>
+            </div>
+
+            <div class="clean-option-box danger-box" style="margin-top: 14px;">
+                <div class="clean-option-header">
+                    <strong style="color: #ef4444;">⚠️ Factory Reset All Records</strong>
+                </div>
+                <p style="font-size: 12px; color: var(--text-muted); margin: 6px 0 10px 0;">
+                    Start 100% fresh with a clean slate: wipes all historical outages and events. Active clients will keep syncing live.
+                </p>
+                <button type="button" class="btn-action btn-danger" id="btn-run-reset-all">Wipe & Reset Everything</button>
+            </div>
         </div>
     </div>
 

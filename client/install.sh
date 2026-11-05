@@ -73,6 +73,8 @@ echo "[3/3] Setting permissions and verifying configuration..."
 chmod +x "${SCRIPT_DIR}/client.py"
 chmod +x "${SCRIPT_DIR}/start.sh"
 chmod +x "${SCRIPT_DIR}/stop.sh"
+chmod +x "${SCRIPT_DIR}/install-service.sh"
+chmod +x "${SCRIPT_DIR}/uninstall-service.sh"
 
 if [ ! -f "${SCRIPT_DIR}/config.json" ]; then
     echo "Creating default config.json..."
@@ -84,7 +86,10 @@ if [ ! -f "${SCRIPT_DIR}/config.json" ]; then
   "token": "",
   "heartbeat_interval_seconds": 3,
   "reconnect_delay_seconds": 2,
-  "log_file": "client.log"
+  "log_file": "client.log",
+  "max_log_size_mb": 2,
+  "log_backup_count": 3,
+  "verify_internet_on_disconnect": true
 }
 EOF
 fi
@@ -98,6 +103,12 @@ echo "1. Edit configuration file: ${SCRIPT_DIR}/config.json"
 echo "   Set 'server_url' to your monitoring server IP (e.g. ws://YOUR_SERVER_IP:8080)"
 echo "   Set 'isp_name' to your ISP identifier (e.g. Airtel Fiber, Jio, etc.)"
 echo ""
-echo "2. Start the client daemon:"
-echo "   cd ${SCRIPT_DIR} && ./start.sh"
+echo "2. Run the client:"
+echo "   Option A (Raspberry Pi / 24x7 Linux Appliance - Recommended):"
+echo "      sudo ./install-service.sh"
+echo "      (Auto-starts on boot, auto-recovers on crash, survives SSH logout)"
+echo ""
+echo "   Option B (Standalone Background Daemon):"
+echo "      ./start.sh"
+echo "      (Includes auto-respawning process watchdog supervisor)"
 echo "==========================================================="

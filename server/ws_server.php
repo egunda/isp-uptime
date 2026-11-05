@@ -372,6 +372,10 @@ class IspWebSocketServer {
                 $ispId = $meta['isp_id'] ?? ($data['isp_id'] ?? null);
                 if (!$ispId) return;
 
+                if (isset($this->ispState[$ispId])) {
+                    unset($this->ispState[$ispId]['pending_disconnect_since'], $this->ispState[$ispId]['pending_disconnect_reason']);
+                }
+
                 $meta['last_seen'] = time();
                 $latencyMs = isset($data['ws_latency_ms']) ? floatval($data['ws_latency_ms']) : (isset($data['latency_ms']) ? floatval($data['latency_ms']) : null);
                 $clientTimeMs = $data['client_time_ms'] ?? null;
@@ -422,6 +426,15 @@ class IspWebSocketServer {
         $wasDown = false;
         $downtimeSec = 0;
 
+        // Clear any pending disconnect grace timer
+        if (isset($this->ispState[$ispId])) {
+            $hadPendingDisconnect = !empty($this->ispState[$ispId]['pending_disconnect_since']);
+            unset($this->ispState[$ispId]['pending_disconnect_since'], $this->ispState[$ispId]['pending_disconnect_reason']);
+            if ($hadPendingDisconnect && ($this->ispState[$ispId]['status'] ?? '') === 'UP') {
+                $this->log(">>> [RECOVERED] ISP '{$ispName}' reconnected seamlessly within grace period. False alarm prevented.");
+            }
+        }
+
         // Check if ISP had an ongoing outage
         if (isset($this->ispState[$ispId]) && $this->ispState[$ispId]['status'] === 'DOWN') {
             $wasDown = true;
@@ -467,7 +480,7 @@ class IspWebSocketServer {
         ]);
     }
 
-    private function onIspDisconnected($ispId, $reason = 'Connection lost / timeout') {
+    private function onIspDisconnected($ispId, $reason = 'Connection lost / timeout', $downTimestamp = null) {
         if (!isset($this->ispState[$ispId])) return;
 
         $isp = &$this->ispState[$ispId];
@@ -475,13 +488,14 @@ class IspWebSocketServer {
             return; // Already marked down
         }
 
-        $now = time();
-        $nowStr = date('Y-m-d H:i:s');
+        $now = $downTimestamp ?: time();
+        $nowStr = date('Y-m-d H:i:s', $now);
         $ispName = $isp['isp_name'];
 
         $isp['status'] = 'DOWN';
         $isp['current_state_since'] = $now;
         $isp['current_state_since_datetime'] = $nowStr;
+        unset($isp['pending_disconnect_since'], $isp['pending_disconnect_reason']);
         $this->saveStateToFile();
 
         // Create new outage record in outages.csv
@@ -509,12 +523,24 @@ class IspWebSocketServer {
 
     private function checkTimeouts() {
         $now = time();
-        foreach ($this->ispState as $ispId => $state) {
+        $graceSec = defined('DISCONNECT_GRACE_SEC') ? DISCONNECT_GRACE_SEC : 5;
+
+        foreach ($this->ispState as $ispId => &$state) {
             if ($state['status'] === 'UP') {
-                $lastSeen = $state['last_seen'] ?? 0;
-                $diff = $now - $lastSeen;
-                if ($diff > HEARTBEAT_TIMEOUT_SEC) {
-                    $this->onIspDisconnected($ispId, "Heartbeat timeout (no response for {$diff}s)");
+                if (!empty($state['pending_disconnect_since'])) {
+                    $pendingDiff = $now - $state['pending_disconnect_since'];
+                    if ($pendingDiff >= $graceSec) {
+                        $reason = $state['pending_disconnect_reason'] ?? 'Connection closed by client';
+                        $discSince = $state['pending_disconnect_since'];
+                        unset($state['pending_disconnect_since'], $state['pending_disconnect_reason']);
+                        $this->onIspDisconnected($ispId, "Client disconnected: {$reason}", $discSince);
+                    }
+                } else {
+                    $lastSeen = $state['last_seen'] ?? 0;
+                    $diff = $now - $lastSeen;
+                    if ($diff > HEARTBEAT_TIMEOUT_SEC) {
+                        $this->onIspDisconnected($ispId, "Heartbeat timeout (no response for {$diff}s)");
+                    }
                 }
             }
         }
@@ -530,7 +556,15 @@ class IspWebSocketServer {
                 $ispId = $meta['isp_id'];
                 // Check if this socket was the active socket for this ISP
                 if (isset($this->ispState[$ispId]) && ($this->ispState[$ispId]['active_socket_id'] ?? null) == $sockId) {
-                    $this->onIspDisconnected($ispId, "Client disconnected: {$reason}");
+                    $this->ispState[$ispId]['active_socket_id'] = null;
+                    $graceSec = defined('DISCONNECT_GRACE_SEC') ? DISCONNECT_GRACE_SEC : 5;
+                    if ($graceSec > 0 && ($this->ispState[$ispId]['status'] ?? '') === 'UP') {
+                        $this->ispState[$ispId]['pending_disconnect_since'] = time();
+                        $this->ispState[$ispId]['pending_disconnect_reason'] = $reason ?: 'Connection closed';
+                        $this->log("ISP '{$ispId}' disconnected ({$reason}). Waiting {$graceSec}s grace period for client self-recovery...", 'INFO');
+                    } else {
+                        $this->onIspDisconnected($ispId, "Client disconnected: {$reason}");
+                    }
                 }
             }
 
@@ -614,27 +648,68 @@ class IspWebSocketServer {
         $reason = $data['reason'] ?? 'Local network outage reported by client';
 
         if ($downTime > 0 && $upTime > $downTime) {
-            $this->log("Recorded client-reported historical outage for {$ispId}: " . $this->formatDuration($duration));
-            $id = time() . '_' . substr(md5(uniqid('', true)), 0, 4);
-            $row = [
-                $id,
-                $ispId,
-                $ispName,
-                $downTime,
-                date('Y-m-d H:i:s', $downTime),
-                $upTime,
-                date('Y-m-d H:i:s', $upTime),
-                $duration,
-                'RESOLVED',
-                str_replace([",", "\n", "\r"], " ", $reason)
-            ];
+            if (!file_exists(OUTAGES_FILE)) return;
 
-            $fp = @fopen(OUTAGES_FILE, 'a');
-            if ($fp && @flock($fp, LOCK_EX)) {
-                fputcsv($fp, $row);
+            $fp = @fopen(OUTAGES_FILE, 'r+');
+            if (!$fp) return;
+
+            if (@flock($fp, LOCK_EX)) {
+                $rows = [];
+                while (($row = fgetcsv($fp)) !== false) {
+                    $rows[] = $row;
+                }
+
+                // Check if the most recent outage for this ISP overlaps or was just resolved within 60s
+                $merged = false;
+                for ($i = count($rows) - 1; $i >= 0; $i--) {
+                    if (isset($rows[$i][1]) && $rows[$i][1] === $ispId) {
+                        $existingDown = intval($rows[$i][3]);
+                        $existingUp = !empty($rows[$i][5]) ? intval($rows[$i][5]) : time();
+
+                        // Overlap or close window match (within 60s of reconnection)
+                        if (abs($existingUp - $upTime) <= 60 || ($downTime <= ($existingUp + 5) && $upTime >= ($existingDown - 5))) {
+                            $earliestDown = min($existingDown, $downTime);
+                            $latestUp = max($existingUp, $upTime);
+                            $rows[$i][3] = $earliestDown;
+                            $rows[$i][4] = date('Y-m-d H:i:s', $earliestDown);
+                            $rows[$i][5] = $latestUp;
+                            $rows[$i][6] = date('Y-m-d H:i:s', $latestUp);
+                            $rows[$i][7] = max(0, $latestUp - $earliestDown);
+                            $rows[$i][8] = 'RESOLVED';
+                            $rows[$i][9] = str_replace([",", "\n", "\r"], " ", $reason);
+                            $merged = true;
+                            $this->log("Reconciled existing outage record {$rows[$i][0]} for {$ispId}: adjusted duration to " . $this->formatDuration($rows[$i][7]));
+                            break;
+                        }
+                    }
+                }
+
+                if (!$merged) {
+                    $id = time() . '_' . substr(md5(uniqid('', true)), 0, 4);
+                    $rows[] = [
+                        $id,
+                        $ispId,
+                        $ispName,
+                        $downTime,
+                        date('Y-m-d H:i:s', $downTime),
+                        $upTime,
+                        date('Y-m-d H:i:s', $upTime),
+                        $duration,
+                        'RESOLVED',
+                        str_replace([",", "\n", "\r"], " ", $reason)
+                    ];
+                    $this->log("Recorded client-reported historical outage for {$ispId}: " . $this->formatDuration($duration));
+                }
+
+                ftruncate($fp, 0);
+                rewind($fp);
+                foreach ($rows as $r) {
+                    fputcsv($fp, $r);
+                }
+
                 @flock($fp, LOCK_UN);
-                @fclose($fp);
             }
+            @fclose($fp);
         }
     }
 

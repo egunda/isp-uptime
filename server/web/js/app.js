@@ -13,6 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initFilterTabs();
     initIspSelector();
     initSetupModal();
+    initCleanModal();
 
     // Initialize WebSocket with fallback
     wsClient = new IspWebSocketClient({
@@ -175,16 +176,28 @@ function loadIspsList() {
         .then(data => {
             if (data.status === 'success') {
                 const select = document.getElementById('isp-filter-select');
-                if (!select) return;
-                const currentVal = select.value;
-                select.innerHTML = '<option value="all">All Monitored ISPs</option>';
-                for (const [id, name] of Object.entries(data.data)) {
-                    const opt = document.createElement('option');
-                    opt.value = id;
-                    opt.textContent = `${name} (${id})`;
-                    select.appendChild(opt);
+                if (select) {
+                    const currentVal = select.value;
+                    select.innerHTML = '<option value="all">All Monitored ISPs</option>';
+                    for (const [id, name] of Object.entries(data.data)) {
+                        const opt = document.createElement('option');
+                        opt.value = id;
+                        opt.textContent = `${name} (${id})`;
+                        select.appendChild(opt);
+                    }
+                    select.value = currentVal;
                 }
-                select.value = currentVal;
+
+                const purgeSelect = document.getElementById('clean-purge-isp-select');
+                if (purgeSelect) {
+                    purgeSelect.innerHTML = '<option value="">Select ISP to purge...</option>';
+                    for (const [id, name] of Object.entries(data.data)) {
+                        const opt = document.createElement('option');
+                        opt.value = id;
+                        opt.textContent = `${name} (${id})`;
+                        purgeSelect.appendChild(opt);
+                    }
+                }
             }
         });
 }
@@ -440,7 +453,7 @@ function renderOutagesTable(outages) {
     if (!tbody) return;
 
     if (!outages || outages.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No outages recorded during this period! 🎉</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No outages recorded during this period! 🎉</td></tr>`;
         return;
     }
 
@@ -456,10 +469,35 @@ function renderOutagesTable(outages) {
                 <td><strong>${escapeHtml(out.full_duration_formatted)}</strong></td>
                 <td><small>${escapeHtml(out.window_downtime_formatted)}</small></td>
                 <td style="color: var(--text-secondary);">${escapeHtml(out.reason)}</td>
+                <td style="text-align: center;">
+                    <button class="btn-delete-row" data-id="${escapeHtml(out.id)}" title="Delete this outage record">🗑️</button>
+                </td>
             </tr>
         `;
     }
     tbody.innerHTML = html;
+
+    // Attach click listeners to delete buttons
+    tbody.querySelectorAll('.btn-delete-row').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const id = btn.getAttribute('data-id');
+            if (!id) return;
+            if (confirm(`Are you sure you want to delete outage record ${id}?`)) {
+                btn.disabled = true;
+                fetch(`api.php?action=delete_outage&id=${encodeURIComponent(id)}`, { method: 'POST' })
+                    .then(res => res.json())
+                    .then(res => {
+                        if (res.status === 'success') {
+                            refreshStats();
+                            loadIspsList();
+                        } else {
+                            alert(res.message || 'Failed to delete outage');
+                        }
+                    })
+                    .catch(err => alert('Error deleting outage: ' + err));
+            }
+        });
+    });
 }
 
 function loadEventsLog() {
@@ -512,6 +550,148 @@ function initSetupModal() {
     if (modal) {
         modal.addEventListener('click', (e) => {
             if (e.target === modal) modal.classList.remove('open');
+        });
+    }
+}
+
+function initCleanModal() {
+    const btnOpen = document.getElementById('btn-open-clean-modal');
+    const modal = document.getElementById('clean-modal');
+    const btnClose = document.getElementById('btn-close-clean-modal');
+
+    if (btnOpen && modal) {
+        btnOpen.addEventListener('click', () => {
+            loadIspsList();
+            modal.classList.add('open');
+        });
+    }
+    if (btnClose && modal) {
+        btnClose.addEventListener('click', () => modal.classList.remove('open'));
+    }
+    if (modal) {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) modal.classList.remove('open');
+        });
+    }
+
+    // Auto Clean
+    const btnAuto = document.getElementById('btn-run-auto-clean');
+    if (btnAuto) {
+        btnAuto.addEventListener('click', () => {
+            btnAuto.disabled = true;
+            btnAuto.textContent = 'Cleaning...';
+            fetch('api.php?action=clean_garbage', { method: 'POST' })
+                .then(r => r.json())
+                .then(res => {
+                    btnAuto.disabled = false;
+                    btnAuto.textContent = 'Run Auto Cleanup';
+                    if (res.status === 'success') {
+                        alert(`Cleanup Complete!\n- Outages removed: ${res.stats.records_removed}\n- Stuck outages closed: ${res.stats.stuck_outages_closed}\n- Duplicates merged: ${res.stats.duplicates_merged}`);
+                        modal.classList.remove('open');
+                        loadIspsList();
+                        refreshStats();
+                        loadEventsLog();
+                    } else {
+                        alert(res.message || 'Failed to clean data');
+                    }
+                })
+                .catch(err => {
+                    btnAuto.disabled = false;
+                    btnAuto.textContent = 'Run Auto Cleanup';
+                    alert('Error running cleanup: ' + err);
+                });
+        });
+    }
+
+    // Prune noise
+    const btnPrune = document.getElementById('btn-run-prune-noise');
+    const selectNoise = document.getElementById('clean-noise-duration');
+    if (btnPrune && selectNoise) {
+        btnPrune.addEventListener('click', () => {
+            const minDur = parseInt(selectNoise.value, 10) || 5;
+            if (confirm(`Remove all historical outages shorter than ${minDur} seconds?`)) {
+                btnPrune.disabled = true;
+                fetch(`api.php?action=clean_garbage&min_duration=${minDur}`, { method: 'POST' })
+                    .then(r => r.json())
+                    .then(res => {
+                        btnPrune.disabled = false;
+                        if (res.status === 'success') {
+                            alert(`Pruned short outages!\n- Records removed: ${res.stats.records_removed}`);
+                            modal.classList.remove('open');
+                            refreshStats();
+                        } else {
+                            alert(res.message || 'Failed to prune');
+                        }
+                    })
+                    .catch(err => {
+                        btnPrune.disabled = false;
+                        alert('Error pruning: ' + err);
+                    });
+            }
+        });
+    }
+
+    // Purge specific ISP
+    const btnPurge = document.getElementById('btn-run-purge-isp');
+    const selectPurge = document.getElementById('clean-purge-isp-select');
+    if (btnPurge && selectPurge) {
+        btnPurge.addEventListener('click', () => {
+            const ispId = selectPurge.value;
+            if (!ispId) {
+                alert('Please select an ISP to purge.');
+                return;
+            }
+            if (confirm(`Are you SURE you want to permanently purge all data for '${ispId}'?`)) {
+                btnPurge.disabled = true;
+                fetch(`api.php?action=purge_isp&isp_id=${encodeURIComponent(ispId)}`, { method: 'POST' })
+                    .then(r => r.json())
+                    .then(res => {
+                        btnPurge.disabled = false;
+                        if (res.status === 'success') {
+                            alert(res.message);
+                            modal.classList.remove('open');
+                            loadIspsList();
+                            fetchCurrentState();
+                            refreshStats();
+                            loadEventsLog();
+                        } else {
+                            alert(res.message || 'Failed to purge ISP');
+                        }
+                    })
+                    .catch(err => {
+                        btnPurge.disabled = false;
+                        alert('Error purging ISP: ' + err);
+                    });
+            }
+        });
+    }
+
+    // Reset all
+    const btnReset = document.getElementById('btn-run-reset-all');
+    if (btnReset) {
+        btnReset.addEventListener('click', () => {
+            if (confirm('⚠️ WARNING: This will permanently wipe all outage records and logs!\n\nAre you sure you want to reset everything?')) {
+                btnReset.disabled = true;
+                fetch('api.php?action=reset_all', { method: 'POST' })
+                    .then(r => r.json())
+                    .then(res => {
+                        btnReset.disabled = false;
+                        if (res.status === 'success') {
+                            alert('All records have been reset to factory state!');
+                            modal.classList.remove('open');
+                            loadIspsList();
+                            fetchCurrentState();
+                            refreshStats();
+                            loadEventsLog();
+                        } else {
+                            alert(res.message || 'Failed to reset data');
+                        }
+                    })
+                    .catch(err => {
+                        btnReset.disabled = false;
+                        alert('Error resetting data: ' + err);
+                    });
+            }
         });
     }
 }

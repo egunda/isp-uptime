@@ -12,6 +12,11 @@ define('WS_PORT', 8080);
 // If no heartbeat is received within this threshold (seconds), mark ISP as DOWN
 define('HEARTBEAT_TIMEOUT_SEC', 10);
 
+// Disconnect Grace Period (seconds)
+// When a client disconnects unexpectedly, wait this many seconds for self-recovery
+// before triggering a DOWN event and creating an outage record. Prevents false alarms.
+define('DISCONNECT_GRACE_SEC', 5);
+
 // Data Directory (Plain text storage - NO DATABASE)
 define('DATA_DIR', __DIR__ . '/data');
 define('EVENTS_FILE', DATA_DIR . '/events.csv');
